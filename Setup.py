@@ -5,7 +5,7 @@ PyInstaller es más adecuado para este proyecto, pero se deja como referencia
 import subprocess
 import sys
 import os
-
+from cx_Freeze import setup, Executable
 
 def compilar():
     """Compila el proyecto usando cx_Freeze"""
