@@ -1,0 +1,255 @@
+# -*- coding: utf-8 -*-
+"""
+Clasifica un único dígito (7 segmentos) entre 0..9 o ' ' (vacío), con corrección para 8
+en imágenes oscuras donde los segmentos laterales (e,f) se ven débiles.
+"""
+ 
+import numpy as np
+#from PIL import Image
+import json
+from datetime import datetime
+import subprocess
+import cv2
+import Setting as ST
+import os
+import sys
+import Homeassistan as HA
+ 
+# Intentar OpenCV; fallback si no estuviese
+try:
+    import cv2
+    OPENCV = True
+except Exception:
+    OPENCV = False
+ 
+# Máscaras estándar de 7 segmentos (a,b,c,d,e,f,g)
+SEGMENTS_FOR_DIGIT = {
+    0: [1,1,1,1,1,1,0],
+    1: [0,1,1,0,0,0,0],
+    2: [1,1,0,1,1,0,1],
+    3: [1,1,1,1,0,0,1],
+    4: [0,1,1,0,0,1,1],
+    5: [1,0,1,1,0,1,1],
+    6: [1,0,1,1,1,1,1],
+    7: [1,1,1,0,0,0,0],
+    8: [1,1,1,1,1,1,1],
+    9: [1,1,1,1,0,1,1],
+}
+ 
+def preprocess(gray):
+  g = cv2.GaussianBlur(gray, (3,3), 0)
+  _, th = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+  return th
+ 
+def find_main_bbox(binary):
+    """BBox principal (mayor componente)."""
+    H, W = binary.shape
+    if OPENCV:
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        best = None
+        best_area = 0
+        for i in range(1, num_labels):
+            x, y, w, h, area = stats[i, 0], stats[i, 1], stats[i, 2], stats[i, 3], stats[i, 4]
+            if area > best_area:
+                best_area = area
+                best = (int(x), int(y), int(w), int(h))
+        return best if best is not None else (0, 0, W, H)
+    else:
+        cols = np.where(np.sum(binary > 0, axis=0) > 0)[0]
+        rows = np.where(np.sum(binary > 0, axis=1) > 0)[0]
+        if cols.size == 0 or rows.size == 0:
+            return (0, 0, W, H)
+        x0, x1 = int(cols[0]), int(cols[-1] + 1)
+        y0, y1 = int(rows[0]), int(rows[-1] + 1)
+        return (x0, y0, x1 - x0, y1 - y0)
+ 
+def sample_segment_probs(binary, bbox):
+    """Probabilidades (0..1) de segmentos a..g encendidos dentro del bbox."""
+    x, y, w, h = bbox
+    # Padding para asegurar cobertura de los trazos
+    pad = max(1, int(0.06 * max(w, h)))
+    x0 = max(0, x - pad)
+    y0 = max(0, y - pad)
+    x1 = min(binary.shape[1], x + w + pad)
+    y1 = min(binary.shape[0], y + h + pad)
+    roi = binary[y0:y1, x0:x1]
+    H, W = roi.shape
+ 
+    # Grosor relativo; un pelo más sensible a verticales
+    t_h = max(1, int(0.13 * H))
+    t_w = max(1, int(0.15 * W))
+ 
+    # Regiones por segmento (a..g)
+    """    regs = [
+        (int(0.22*W), int(0.03*H), int(0.56*W), t_h),           # a
+        (W - t_w - int(0.03*W), int(0.15*H), t_w, int(0.32*H)), # b
+        (W - t_w - int(0.03*W), int(0.55*H), t_w, int(0.32*H)), # c
+        (int(0.22*W), H - t_h - int(0.03*H), int(0.56*W), t_h), # d
+        (int(0.03*W), int(0.55*H), t_w, int(0.32*H)),           # e
+        (int(0.03*W), int(0.15*H), t_w, int(0.32*H)),           # f
+        (int(0.22*W), int(0.50*H) - t_h//2, int(0.56*W), t_h),  # g
+    ]"""
+    regs = [
+        (12, 5, 8, 7),           # a
+        (23, 18, 5, 8), # b
+        (21, 42, 5, 8), # c
+        (11, 53, 8, 7), # d
+        (3, 41, 5, 8),           # e
+        (3, 17, 5, 8),           # f
+        (12, 28, 10,8),  # g
+    ]
+ 
+    probs = []
+    for rx, ry, rw, rh in regs:
+        sub = roi[ry:ry+rh, rx:rx+rw]
+        if sub.size == 0:
+            probs.append(0.0)
+        else:
+            on_ratio = np.sum(sub > 0) / sub.size
+            # Logística: más agresiva para discriminar ON en zonas oscuras
+            k = 14.0
+            probs.append(1.0 / (1.0 + np.exp(-k * (on_ratio - 0.5))))
+    return probs
+ 
+#def classify_single_digit(image_path, force_eight_fix=True):
+def classify_single_digit(gray, force_eight_fix=True):
+    """
+    Devuelve:
+      {
+        'text': '0..9 | ' ',
+        'probs': {'0':%,..., '9':%, ' ':%},
+        'best': ('clase', %),
+        'bbox': {'x','y','w','h'},
+        'segments': {'a':p,...,'g':p}  # probs 0..1 por segmento
+      }
+    """
+    binary = preprocess(gray)
+    #bbox = find_main_bbox(binary)
+    bbox = (3,3,30,60)
+    segp = sample_segment_probs(binary, bbox)
+#    cv2.imshow("Escala_grises", binary)
+#    cv2.waitKey(0)
+    classes = [str(d) for d in range(10)] + [' ']
+    probs = {c: 0.0 for c in classes}
+    eps = 1e-6
+ 
+    # Scores por dígito (producto de ON/OFF)
+    for d in range(10):
+        mask = SEGMENTS_FOR_DIGIT[d]
+        logsum = 0.0
+        for p, m in zip(segp, mask):
+            logsum += np.log(max(p, eps)) if m == 1 else np.log(max(1.0 - p, eps))
+        probs[str(d)] = float(np.exp(logsum))
+ 
+    # Vacío: todos OFF
+    p_off = 1.0
+    for p in segp:
+        p_off *= max(1.0 - p, eps)
+    probs[' '] = float(p_off)
+ 
+    # --- Corrección para 8 en escenas oscuras ---
+    # Si el top sale 3 o 2, pero TODOS los segmentos tienen activación moderada,
+    # aplicamos un prior hacia 8 y renormalizamos.
+    if force_eight_fix:
+        best_cls = max(probs.items(), key=lambda kv: kv[1])[0]
+        # condición de "todos moderadamente ON"
+        all_moderate_on = sum(1 for p in segp if p > 0.40) >= 6 and min(segp) > 0.30
+        if best_cls in ('3', '2') and all_moderate_on:
+            # prior hacia 8 (multiplicador)
+            probs['8'] *= 5.0
+            # leve penalización a 3/2
+            probs['3'] *= 0.7
+            probs['2'] *= 0.7
+ 
+    # Normalización a %
+    total = float(sum(probs.values()))
+    if total <= 1e-12:
+        probs[' '] = 1.0
+        total = 1.0
+    for k in list(probs.keys()):
+        probs[k] = 100.0 * probs[k] / total
+ 
+    best_cls, best_pct = max(probs.items(), key=lambda kv: kv[1])
+    return {
+        'text': best_cls,
+        'probs': probs,
+        'best': (best_cls, best_pct),
+        'bbox': {'x': int(bbox[0]), 'y': int(bbox[1]), 'w': int(bbox[2]), 'h': int(bbox[3])},
+        'segments': dict(zip(list('abcdefg'), [float(p) for p in segp]))
+    }
+ahora = str(datetime.now().strftime("%Y%m%d_%H%M%S"))
+dias_antiguedad_para_borrar = 4
+ha = HA.HomeAssistantAPI()
+usuario, contraseña = ST.Setting.obtener_credenciales()
+url = ST.Setting.obtener_url_de_archivo_ini()
+comando=f'curl -u {usuario}:{contraseña} --digest "{url}" -o imagen_camara' + '.jpg --silent --show-error --max-time 10'
+print(comando)
+resultado = subprocess.run(comando, shell=True, capture_output=True, text=True)
+pathfile = ST.Setting.obtener_path_de_archivo_ini()
+imgfile = "imagen_camara"
+codigo = []
+imgTotally = cv2.imread(pathfile + imgfile + ".jpg", cv2.IMREAD_GRAYSCALE)
+carpeta_imagenes = pathfile + "Imagenes_OCR\\"
+if not os.path.exists(carpeta_imagenes):
+    os.makedirs(carpeta_imagenes)
+
+# Verificar que la imagen se cargó correctamente
+if imgTotally is None:
+    print("Error: No se pudo cargar la imagen. Verifica la ruta del archivo.")
+    exit(1)
+# Mostrar dimensiones de la imagen
+print(f"Dimensiones de la imagen: {imgTotally.shape}")
+cv2.imwrite('imagen_' + str(ahora) + ".jpg", imgTotally)
+roi = imgTotally[100:270,1000:1200]
+if roi.size > 0:
+    print(f"Dimensiones del ROI: {roi.shape}")
+    #cv2.imshow("Escala_grises", roi)
+    #cv2.waitKey(0)
+else:
+    print("Advertencia: El ROI está vacío. Verifica las coordenadas del slice.")
+ 
+for indice, sizenum in enumerate([[1057,115,30,60],[1094,114,30,60],[1134,113,30,60],[1024,187,30,60],[1059,183,30,60],[1100,204,22,38]]):
+  crop = imgTotally[sizenum[1]:sizenum[1]+sizenum[3],sizenum[0]:sizenum[0]+sizenum[2]]
+  img = cv2.resize(crop, (30, 60), interpolation=cv2.INTER_AREA)
+  cv2.imwrite(carpeta_imagenes+'imagen_recortada_' + str(indice+1) + "_" + ".jpg", img)
+  result = classify_single_digit(img)
+  print(imgfile, json.dumps(result, ensure_ascii=False, indent=2))
+  codigo.append(result['text'])
+
+print("--------------------------------------------------------")
+print("Disponible: ",codigo[0]+codigo[1]+"." + codigo[2] + " %")
+print("Presion: ",codigo[3]+codigo[4]+"." + codigo[5] + " bar")
+print("--------------------------------------------------------")
+print("Enviando datos a Home Assistant...")
+if not ha.url or not ha.token:
+    print("Configuracion de Home Assistant no encontrada en Setting.ini")
+else:
+    porcentaje_n2 = float(codigo[0]+codigo[1]+"." + codigo[2])
+    presion_bar = float(codigo[3]+codigo[4]+"." + codigo[5])
+    enviar_porcentaje = ha.enviar_datos_n2(porcentaje_n2)
+    enviar_presion = ha.enviar_datos_presion(presion_bar)
+    if enviar_porcentaje and enviar_presion:
+        print("Datos enviados correctamente a Home Assistant.")
+    else:
+        print("Error al enviar datos a Home Assistant.")
+
+with open("Calculado.txt", "a") as archivo:
+  archivo.write(ahora + " - " "Disponible: " + codigo[0]+codigo[1]+"." + codigo[2] + " % - " + "Presion: " + codigo[3]+codigo[4]+"." + codigo[5] + " bar\n")
+
+# Limpiar archivos antiguos
+archivos_eliminados = 0
+for archivos in os.listdir(carpeta_imagenes):
+    ruta_completa = os.path.join(carpeta_imagenes, archivos)
+    if os.path.isfile(ruta_completa):
+        fecha_modificacion = os.path.getmtime(ruta_completa)
+        fecha_modificacion_dt = datetime.fromtimestamp(fecha_modificacion)
+        diferencia_dias = (datetime.now() - fecha_modificacion_dt).days
+        if diferencia_dias >= dias_antiguedad_para_borrar:
+            os.remove(ruta_completa)
+            archivos_eliminados += 1
+            print(f"  - Eliminado: {archivos} (antigüedad: {diferencia_dias} días)")
+
+if archivos_eliminados > 0:
+    print(f"Se eliminaron {archivos_eliminados} archivos con más de {dias_antiguedad_para_borrar} días.")
+else:
+    print(f"No hay archivos con más de {dias_antiguedad_para_borrar} días para eliminar.")
