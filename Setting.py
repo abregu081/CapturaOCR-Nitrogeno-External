@@ -33,11 +33,10 @@ class Setting:
     try:
        archivo_txt= Setting.Capturar_datos_txt("Setting.ini")
        dict_valores = Setting.Crear_tupla_Setting(archivo_txt)
-       dato = Setting()
-       dato.path = dict_valores["path"]
-       return dato
+       return dict_valores["path"]
     except Exception as ErrorPath:
        print(str(ErrorPath))
+       return ""
 
  @staticmethod
  def obtener_credenciales():

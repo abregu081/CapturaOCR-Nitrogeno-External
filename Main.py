@@ -188,11 +188,12 @@ resultado = subprocess.run(comando, shell=True, capture_output=True, text=True)
 pathfile = ST.Setting.obtener_path_de_archivo_ini()
 imgfile = "imagen_camara"
 codigo = []
-imgTotally = cv2.imread(pathfile + imgfile + ".jpg", cv2.IMREAD_GRAYSCALE)
+imgTotally = cv2.imread(pathfile + "\\" +imgfile + ".jpg", cv2.IMREAD_GRAYSCALE)
 carpeta_imagenes = pathfile + "Imagenes_OCR\\"
 if not os.path.exists(carpeta_imagenes):
     os.makedirs(carpeta_imagenes)
 
+print(pathfile + imgfile + ".jpg")
 # Verificar que la imagen se cargó correctamente
 if imgTotally is None:
     print("Error: No se pudo cargar la imagen. Verifica la ruta del archivo.")
