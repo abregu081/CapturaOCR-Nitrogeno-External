@@ -25,14 +25,13 @@ def compilar():
         'datetime',
         'subprocess',
         'os',
-        'sys'
+        'sys','Setting',
+        'Homeassistan', 'Logs'
     ]
 
     # Archivos adicionales que se copiarán al ejecutable
     includefiles = [
-        'Setting.ini',
-        'Setting.py',
-        'Homeassistan.py'
+        'Setting.ini'
     ]
 
     # Módulos a excluir (para reducir tamaño)

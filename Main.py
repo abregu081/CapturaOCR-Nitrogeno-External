@@ -14,6 +14,7 @@ import Setting as ST
 import os
 import sys
 import Homeassistan as HA
+import Logs as LG
  
 # Intentar OpenCV; fallback si no estuviese
 try:
@@ -63,7 +64,7 @@ def find_main_bbox(binary):
         y0, y1 = int(rows[0]), int(rows[-1] + 1)
         return (x0, y0, x1 - x0, y1 - y0)
  
-def sample_segment_probs(binary, bbox):
+def sample_segment_probs(binary, bbox, regs):
     """Probabilidades (0..1) de segmentos a..g encendidos dentro del bbox."""
     x, y, w, h = bbox
     # Padding para asegurar cobertura de los trazos
@@ -79,26 +80,6 @@ def sample_segment_probs(binary, bbox):
     t_h = max(1, int(0.13 * H))
     t_w = max(1, int(0.15 * W))
  
-    # Regiones por segmento (a..g)
-    """    regs = [
-        (int(0.22*W), int(0.03*H), int(0.56*W), t_h),           # a
-        (W - t_w - int(0.03*W), int(0.15*H), t_w, int(0.32*H)), # b
-        (W - t_w - int(0.03*W), int(0.55*H), t_w, int(0.32*H)), # c
-        (int(0.22*W), H - t_h - int(0.03*H), int(0.56*W), t_h), # d
-        (int(0.03*W), int(0.55*H), t_w, int(0.32*H)),           # e
-        (int(0.03*W), int(0.15*H), t_w, int(0.32*H)),           # f
-        (int(0.22*W), int(0.50*H) - t_h//2, int(0.56*W), t_h),  # g
-    ]"""
-    regs = [
-        (12, 5, 8, 7),           # a
-        (23, 18, 5, 8), # b
-        (21, 42, 5, 8), # c
-        (11, 53, 8, 7), # d
-        (3, 41, 5, 8),           # e
-        (3, 17, 5, 8),           # f
-        (12, 28, 10,8),  # g
-    ]
- 
     probs = []
     for rx, ry, rw, rh in regs:
         sub = roi[ry:ry+rh, rx:rx+rw]
@@ -112,7 +93,7 @@ def sample_segment_probs(binary, bbox):
     return probs
  
 #def classify_single_digit(image_path, force_eight_fix=True):
-def classify_single_digit(gray, force_eight_fix=True):
+def classify_single_digit(gray, regs, force_eight_fix=True):
     """
     Devuelve:
       {
@@ -126,7 +107,7 @@ def classify_single_digit(gray, force_eight_fix=True):
     binary = preprocess(gray)
     #bbox = find_main_bbox(binary)
     bbox = (3,3,30,60)
-    segp = sample_segment_probs(binary, bbox)
+    segp = sample_segment_probs(binary, bbox, regs)
 #    cv2.imshow("Escala_grises", binary)
 #    cv2.waitKey(0)
     classes = [str(d) for d in range(10)] + [' ']
@@ -179,6 +160,12 @@ def classify_single_digit(gray, force_eight_fix=True):
     }
 ahora = str(datetime.now().strftime("%Y%m%d_%H%M%S"))
 dias_antiguedad_para_borrar = 4
+
+# Verificar si se debe guardar imágenes binarizadas
+guardar_binarias = len(sys.argv) > 1 and sys.argv[1].lower() == 'bin'
+if guardar_binarias:
+    print("Modo BIN activado: Se guardarán las imágenes binarizadas")
+
 ha = HA.HomeAssistantAPI()
 usuario, contraseña = ST.Setting.obtener_credenciales()
 url = ST.Setting.obtener_url_de_archivo_ini()
@@ -186,12 +173,16 @@ comando=f'curl -u {usuario}:{contraseña} --digest "{url}" -o imagen_camara' + '
 print(comando)
 resultado = subprocess.run(comando, shell=True, capture_output=True, text=True)
 pathfile = ST.Setting.obtener_path_de_archivo_ini()
+path_log = ST.Setting.obtener_path_log_de_archivo_ini()
+logs = LG.GuardarLog(path_log)
+regiones_segmentos = ST.Setting.obtener_regiones_segmentos()
+coordenadas_digitos = ST.Setting.obtener_coordenadas_digitos()
 imgfile = "imagen_camara"
 codigo = []
-imgTotally = cv2.imread(pathfile + "\\" +imgfile + ".jpg", cv2.IMREAD_GRAYSCALE)
-carpeta_imagenes = pathfile + "Imagenes_OCR\\"
-if not os.path.exists(carpeta_imagenes):
-    os.makedirs(carpeta_imagenes)
+imgTotally = cv2.imread(pathfile +imgfile + ".jpg", cv2.IMREAD_GRAYSCALE)
+
+carpeta_imagenes_recortes = logs.carpeta_recortes
+
 
 print(pathfile + imgfile + ".jpg")
 # Verificar que la imagen se cargó correctamente
@@ -200,7 +191,7 @@ if imgTotally is None:
     exit(1)
 # Mostrar dimensiones de la imagen
 print(f"Dimensiones de la imagen: {imgTotally.shape}")
-cv2.imwrite('imagen_' + str(ahora) + ".jpg", imgTotally)
+guardar_imagen_completa = logs.guardar_imagen_principal(imgTotally, imgfile + ".jpg")
 roi = imgTotally[100:270,1000:1200]
 if roi.size > 0:
     print(f"Dimensiones del ROI: {roi.shape}")
@@ -209,13 +200,21 @@ if roi.size > 0:
 else:
     print("Advertencia: El ROI está vacío. Verifica las coordenadas del slice.")
  
-for indice, sizenum in enumerate([[1057,115,30,60],[1094,114,30,60],[1134,113,30,60],[1024,187,30,60],[1059,183,30,60],[1100,204,22,38]]):
+for indice, sizenum in enumerate(coordenadas_digitos):
   crop = imgTotally[sizenum[1]:sizenum[1]+sizenum[3],sizenum[0]:sizenum[0]+sizenum[2]]
   img = cv2.resize(crop, (30, 60), interpolation=cv2.INTER_AREA)
-  cv2.imwrite(carpeta_imagenes+'imagen_recortada_' + str(indice+1) + "_" + ".jpg", img)
-  result = classify_single_digit(img)
+  cv2.imwrite(os.path.join(carpeta_imagenes_recortes, f'imagen_recortada_{indice+1}_.jpg'), img)
+  
+  # Guardar imagen binarizada si está en modo BIN
+  if guardar_binarias:
+    img_binaria = preprocess(img)
+    cv2.imwrite(os.path.join(carpeta_imagenes_recortes, f'imagen_Bin_{indice+1}_.jpg'), img_binaria)
+  
+  result = classify_single_digit(img, regiones_segmentos)
+  guardar_resultado_log_file = logs.escribir_log(f"Imagen recortada {indice+1}: {json.dumps(result, ensure_ascii=False)}\n")
   print(imgfile, json.dumps(result, ensure_ascii=False, indent=2))
   codigo.append(result['text'])
+
 
 print("--------------------------------------------------------")
 print("Disponible: ",codigo[0]+codigo[1]+"." + codigo[2] + " %")
@@ -234,13 +233,43 @@ else:
     else:
         print("Error al enviar datos a Home Assistant.")
 
-with open("Calculado.txt", "a") as archivo:
-  archivo.write(ahora + " - " "Disponible: " + codigo[0]+codigo[1]+"." + codigo[2] + " % - " + "Presion: " + codigo[3]+codigo[4]+"." + codigo[5] + " bar\n")
+# Leer registros existentes y filtrar los últimos 2 días
+registros_validos = []
+archivo_calculado = "Calculado.txt"
+dias_a_mantener = 2
+
+if os.path.exists(archivo_calculado):
+    try:
+        with open(archivo_calculado, "r") as archivo:
+            for linea in archivo:
+                # Extraer la fecha del registro (formato: YYYYMMDD_HHMMSS)
+                if linea.strip() and " - " in linea:
+                    try:
+                        fecha_str = linea.split(" - ")[0].strip()
+                        fecha_registro = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S")
+                        diferencia = (datetime.now() - fecha_registro).days
+                        if diferencia < dias_a_mantener:
+                            registros_validos.append(linea)
+                    except ValueError:
+                        # Si no se puede parsear la fecha, mantener el registro
+                        registros_validos.append(linea)
+    except Exception as e:
+        print(f"Error leyendo Calculado.txt: {e}")
+
+# Agregar el nuevo registro
+nuevo_registro = ahora + " - " "Disponible: " + codigo[0]+codigo[1]+"." + codigo[2] + " % - " + "Presion: " + codigo[3]+codigo[4]+"." + codigo[5] + " bar\n"
+registros_validos.append(nuevo_registro)
+
+# Reescribir el archivo solo con los registros válidos
+with open(archivo_calculado, "w") as archivo:
+    archivo.writelines(registros_validos)
+
+print(f"Registro guardado en {archivo_calculado} (últimos {dias_a_mantener} días)")
 
 # Limpiar archivos antiguos
 archivos_eliminados = 0
-for archivos in os.listdir(carpeta_imagenes):
-    ruta_completa = os.path.join(carpeta_imagenes, archivos)
+for archivos in os.listdir(carpeta_imagenes_recortes):
+    ruta_completa = os.path.join(carpeta_imagenes_recortes, archivos)
     if os.path.isfile(ruta_completa):
         fecha_modificacion = os.path.getmtime(ruta_completa)
         fecha_modificacion_dt = datetime.fromtimestamp(fecha_modificacion)
