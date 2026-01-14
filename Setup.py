@@ -26,7 +26,7 @@ def compilar():
         'subprocess',
         'os',
         'sys','Setting',
-        'Homeassistan', 'Logs'
+        'Homeassistan', 'logs'
     ]
 
     # Archivos adicionales que se copiarán al ejecutable

@@ -14,7 +14,7 @@ import Setting as ST
 import os
 import sys
 import Homeassistan as HA
-import Logs as LG
+import logs as LG
  
 # Intentar OpenCV; fallback si no estuviese
 try:
@@ -172,6 +172,24 @@ url = ST.Setting.obtener_url_de_archivo_ini()
 comando=f'curl -u {usuario}:{contraseña} --digest "{url}" -o imagen_camara' + '.jpg --silent --show-error --max-time 10'
 print(comando)
 resultado = subprocess.run(comando, shell=True, capture_output=True, text=True)
+
+# Verificar si el comando curl falló
+if resultado.returncode != 0:
+    print(f"Error al ejecutar curl. Código de error: {resultado.returncode}")
+    print(f"Error: {resultado.stderr}")
+    
+    # Crear archivo de error indicando falta de conexión
+    archivo_error = "sin_conexion.txt"
+    ahora_error = datetime.now().strftime("%Y%m%d_%H%M%S")
+    with open(archivo_error, "w") as f:
+        f.write(f"{ahora_error} - Error de conexión\n")
+        f.write(f"No se pudo descargar la imagen de la cámara\n")
+        f.write(f"Código de error: {resultado.returncode}\n")
+        f.write(f"Detalle: {resultado.stderr}\n")
+    
+    print(f"Archivo '{archivo_error}' creado. Saliendo sin procesar imágenes antiguas.")
+    exit(1)
+
 pathfile = ST.Setting.obtener_path_de_archivo_ini()
 path_log = ST.Setting.obtener_path_log_de_archivo_ini()
 logs = LG.GuardarLog(path_log)
@@ -180,7 +198,6 @@ coordenadas_digitos = ST.Setting.obtener_coordenadas_digitos()
 imgfile = "imagen_camara"
 codigo = []
 imgTotally = cv2.imread(pathfile +imgfile + ".jpg", cv2.IMREAD_GRAYSCALE)
-
 carpeta_imagenes_recortes = logs.carpeta_recortes
 
 
