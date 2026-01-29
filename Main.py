@@ -177,7 +177,8 @@ resultado = subprocess.run(comando, shell=True, capture_output=True, text=True)
 if resultado.returncode != 0:
     print(f"Error al ejecutar curl. Código de error: {resultado.returncode}")
     print(f"Error: {resultado.stderr}")
-    
+    enviar_porcentaje = ha.enviar_datos_n2(F"NO_CONEXION")
+    enviar_presion = ha.enviar_datos_presion(f"NO_CONEXION")
     # Crear archivo de error indicando falta de conexión
     archivo_error = "sin_conexion.txt"
     ahora_error = datetime.now().strftime("%Y%m%d_%H%M%S")
